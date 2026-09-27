@@ -1,0 +1,126 @@
+# chpoc-app: the application/test client inside the VPC.
+# Installs the hatest harness and gives it SSH access to the DB nodes for the
+# chaos scenarios. It is also the only host with a public IP (SSH jump host).
+- name: Application host
+  hosts: client
+  become: true
+  vars:
+    app_dir: /opt/chpoc/app
+    app_user: "{{ ansible_user }}"
+  tasks:
+    - name: Hostname matches the inventory name
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Packages
+      ansible.builtin.apt:
+        name: [python3-venv, python3-pip, tmux, ufw, chrony, netcat-openbsd]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Cluster names in /etc/hosts
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} clickhouse-poc"
+        block: |
+          {% for h in groups['clickhouse'] %}
+          {{ hostvars[h].node_ip }} {{ h }}
+          {% endfor %}
+          {% if enable_vip | bool %}
+          {{ vip_address }} {{ vip_hostname }}
+          {% endif %}
+
+    # Public host: only SSH is reachable from outside.
+    - name: Allow SSH
+      community.general.ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+
+    - name: Default deny incoming, enable
+      community.general.ufw:
+        state: enabled
+        direction: incoming
+        policy: deny
+
+    - name: Internal SSH key for the chaos runner
+      community.crypto.openssh_keypair:
+        path: "/home/{{ app_user }}/.ssh/id_chpoc"
+        type: ed25519
+        comment: "chpoc-app chaos runner"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+      register: chaos_key
+
+    - name: Authorize the chaos key on the DB nodes
+      ansible.posix.authorized_key:
+        user: "{{ app_user }}"
+        key: "{{ chaos_key.public_key }} {{ chaos_key.comment }}"
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['clickhouse'] }}"
+
+    - name: SSH client config for the chaos runner
+      ansible.builtin.blockinfile:
+        path: "/home/{{ app_user }}/.ssh/config"
+        create: true
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+        marker: "# {mark} chpoc"
+        block: |
+          Host {{ groups['clickhouse'] | join(' ') }} {{ groups['clickhouse'] | map('extract', hostvars, 'node_ip') | join(' ') }}
+              User {{ app_user }}
+              IdentityFile ~/.ssh/id_chpoc
+              IdentitiesOnly yes
+              StrictHostKeyChecking accept-new
+
+    - name: App directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: App code
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../app/{{ item }}"
+        dest: "{{ app_dir }}/"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: preserve
+      loop: [hatest, config.yaml, requirements.txt, run_test.sh]
+
+    - name: App virtualenv
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ app_dir }}/.venv"
+        virtualenv_command: python3 -m venv
+      become_user: "{{ app_user }}"
+
+    - name: App password for the workload (never in the repo)
+      ansible.builtin.copy:
+        dest: "/home/{{ app_user }}/.chpoc-app.env"
+        content: "export CH_APP_PASSWORD={{ vault_app_password | quote }}\n"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+      no_log: true
+
+    - name: hatest command
+      ansible.builtin.copy:
+        dest: /usr/local/bin/hatest
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          # Runs the HA test harness from anywhere: hatest run | status | verify | chaos | scenario
+          . "$HOME/.chpoc-app.env"
+          cd {{ app_dir }} && exec .venv/bin/python -m hatest "$@"
+
+- name: Public status page
+  hosts: client
+  become: true
+  roles:
+    - role: status_web
+      when: web_domain | length > 0
