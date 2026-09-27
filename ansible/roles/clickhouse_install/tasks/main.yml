@@ -1,0 +1,30 @@
+- name: ClickHouse apt signing key
+  ansible.builtin.get_url:
+    url: https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key
+    dest: /etc/apt/keyrings/clickhouse.asc
+    mode: "0644"
+
+- name: ClickHouse apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/clickhouse.asc] https://packages.clickhouse.com/deb {{ clickhouse_channel }} main"
+    filename: clickhouse
+    state: present
+
+# The server package ships the single `clickhouse` binary that also runs Keeper,
+# so server and Keeper are always the same version. We do not install the
+# separate clickhouse-keeper package (it clashes with clickhouse-server on one host).
+- name: ClickHouse packages
+  ansible.builtin.apt:
+    name: "{{ ['clickhouse-common-static', 'clickhouse-server', 'clickhouse-client']
+              | map('regex_replace', '$', ('=' ~ clickhouse_version) if clickhouse_version else '') | list }}"
+    state: present
+    update_cache: true
+    allow_change_held_packages: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Hold packages (upgrades only happen through this playbook)
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: [clickhouse-common-static, clickhouse-server, clickhouse-client]

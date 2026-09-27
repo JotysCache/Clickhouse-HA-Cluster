@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+[Unit]
+Description=ClickHouse Keeper (Raft coordination for replicated tables)
+Requires=network-online.target
+After=network-online.target thp-madvise.service
+
+[Service]
+Type=simple
+User=clickhouse
+Group=clickhouse
+ExecStart=/usr/bin/clickhouse keeper --config=/etc/clickhouse-keeper/keeper_config.xml
+Restart=always
+RestartSec=5
+LimitNOFILE=500000
+LimitCORE=infinity
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

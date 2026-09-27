@@ -1,0 +1,56 @@
+- name: Keeper directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: clickhouse
+    group: clickhouse
+    mode: "0750"
+  loop:
+    - /etc/clickhouse-keeper
+    - /var/lib/clickhouse-keeper
+    - /var/log/clickhouse-keeper
+
+- name: Keeper config
+  ansible.builtin.template:
+    src: keeper_config.xml.j2
+    dest: /etc/clickhouse-keeper/keeper_config.xml
+    owner: clickhouse
+    group: clickhouse
+    mode: "0640"
+  notify: restart clickhouse-keeper
+
+- name: Keeper systemd unit
+  ansible.builtin.template:
+    src: clickhouse-keeper.service.j2
+    dest: /etc/systemd/system/clickhouse-keeper.service
+    mode: "0644"
+  notify: restart clickhouse-keeper
+
+- name: Keeper enabled and running
+  ansible.builtin.systemd:
+    name: clickhouse-keeper
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply Keeper config changes now
+  ansible.builtin.meta: flush_handlers
+
+- name: Keeper port open
+  ansible.builtin.wait_for:
+    host: "{{ node_ip }}"
+    port: "{{ keeper_client_port }}"
+    timeout: 60
+
+# A Keeper that is up but has no quorum answers mntr with "not currently serving".
+- name: Keeper quorum formed
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo mntr | nc -w 2 {{ node_ip }} {{ keeper_client_port }} | awk '$1=="zk_server_state"{print $2}'
+  args:
+    executable: /bin/bash
+  register: keeper_state
+  until: keeper_state.stdout in ['leader', 'follower']
+  retries: 30
+  delay: 2
+  changed_when: false

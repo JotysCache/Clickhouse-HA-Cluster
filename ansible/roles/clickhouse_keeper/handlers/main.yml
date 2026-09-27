@@ -1,0 +1,5 @@
+- name: restart clickhouse-keeper
+  ansible.builtin.systemd:
+    name: clickhouse-keeper
+    state: restarted
+    daemon_reload: true
