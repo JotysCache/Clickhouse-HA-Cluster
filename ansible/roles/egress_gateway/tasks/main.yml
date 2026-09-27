@@ -1,0 +1,61 @@
+# chpoc-app is the VPC's only controlled way out: the DB nodes have no public IP
+# and the VPC has no NAT gateway. It provides:
+#   - an allowlisted HTTP(S) forward proxy (Squid) for apt / ClickHouse packages
+#   - an NTP server (chrony), since Raft and replication need synchronised clocks
+- name: Squid and chrony
+  ansible.builtin.apt:
+    name: [squid, chrony, ufw]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Squid config
+  ansible.builtin.template:
+    src: squid.conf.j2
+    dest: /etc/squid/squid.conf
+    mode: "0644"
+    validate: squid -k parse -f %s
+  notify: restart squid
+
+- name: chrony serves time to the VPC
+  ansible.builtin.copy:
+    dest: /etc/chrony/conf.d/chpoc-server.conf
+    content: |
+      # Serve NTP to the private nodes (they cannot reach public NTP).
+      allow {{ vpc_cidr }}
+      # Keep serving from the local clock if upstream NTP is briefly lost.
+      local stratum 10
+    mode: "0644"
+  notify: restart chrony
+
+- name: Proxy and NTP reachable from the VPC only
+  community.general.ufw:
+    rule: allow
+    src: "{{ vpc_cidr }}"
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - {port: "{{ egress_proxy_port }}", proto: tcp}
+    - {port: "123", proto: udp}
+
+- name: Allow SSH
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+
+- name: Default deny incoming, enable
+  community.general.ufw:
+    state: enabled
+    direction: incoming
+    policy: deny
+
+- name: Services running
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [squid, chrony]
+
+- name: Apply config changes now
+  ansible.builtin.meta: flush_handlers

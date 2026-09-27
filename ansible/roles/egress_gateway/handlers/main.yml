@@ -1,0 +1,9 @@
+- name: restart squid
+  ansible.builtin.systemd:
+    name: squid
+    state: restarted
+
+- name: restart chrony
+  ansible.builtin.systemd:
+    name: chrony
+    state: restarted
