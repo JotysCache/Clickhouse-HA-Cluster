@@ -1,0 +1,33 @@
+# Full deploy: ansible-playbook site.yml   (vault key: ~/.chpoc-vault-pass, see ansible.cfg)
+- name: Egress gateway (proxy + NTP for the private nodes)
+  hosts: client
+  become: true
+  roles:
+    - role: egress_gateway
+      when: use_egress_proxy | bool
+
+- name: ClickHouse nodes (OS, Keeper, server)
+  hosts: clickhouse
+  become: true
+  environment: "{{ proxy_env }}"
+  roles:
+    - common
+    - clickhouse_install
+    - clickhouse_keeper
+    - clickhouse_server
+
+- name: Load balancer and floating VIP
+  hosts: clickhouse
+  become: true
+  roles:
+    - role: haproxy_keepalived
+      when: enable_vip | bool
+
+- name: Schema
+  ansible.builtin.import_playbook: playbooks/schema.yml
+
+- name: Application host
+  ansible.builtin.import_playbook: playbooks/app_host.yml
+
+- name: Health report
+  ansible.builtin.import_playbook: playbooks/health.yml

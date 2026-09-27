@@ -1,0 +1,84 @@
+# Read-only cluster health report. Fails if anything is not fully healthy.
+#   ansible-playbook playbooks/health.yml --ask-vault-pass
+- name: Cluster health
+  hosts: clickhouse
+  become: true
+  gather_facts: false
+  vars:
+    ch: clickhouse-client --config-file /root/.clickhouse-client-admin.xml
+  tasks:
+    - name: Server /ping
+      ansible.builtin.uri:
+        url: "http://{{ node_ip }}:{{ ch_http_port }}/ping"
+      register: ping
+      failed_when: false
+
+    - name: Keeper role
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo mntr | nc -w 2 {{ node_ip }} {{ keeper_client_port }} | awk '$1=="zk_server_state"{print $2}'
+      args:
+        executable: /bin/bash
+      register: keeper
+      changed_when: false
+      failed_when: false
+
+    - name: Replication status
+      ansible.builtin.command: >
+        {{ ch }} --format JSONEachRow -q
+        "SELECT table, is_readonly, is_session_expired, absolute_delay, queue_size,
+                active_replicas, total_replicas
+         FROM system.replicas WHERE database = '{{ app_database }}'"
+      register: replicas
+      changed_when: false
+      failed_when: false
+
+    - name: VIP owner
+      ansible.builtin.shell: ip -o addr show | grep -qw '{{ vip_address }}' && echo yes || echo no
+      register: vip_here
+      changed_when: false
+      when: enable_vip | bool
+
+    - name: HAProxy backend view
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl -s 'http://127.0.0.1:{{ haproxy_stats_port }}/stats;csv' \
+          | awk -F, '$1 ~ /_nodes$/ && $2 != "BACKEND" {print $1"/"$2"="$18}'
+      args:
+        executable: /bin/bash
+      register: haproxy
+      changed_when: false
+      failed_when: false
+      when: enable_vip | bool
+
+    - name: Node summary
+      ansible.builtin.set_fact:
+        node_health:
+          server: "{{ 'up' if ping.status | default(0) == 200 else 'DOWN' }}"
+          keeper: "{{ keeper.stdout | default('') or 'DOWN/no-quorum' }}"
+          vip_owner: "{{ vip_here.stdout | default('n/a') }}"
+          replicas: "{{ replicas.stdout_lines | default([]) | map('from_json') | list }}"
+          haproxy_backends: "{{ haproxy.stdout_lines | default([]) }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ ansible_play_hosts_all | zip(ansible_play_hosts_all | map('extract', hostvars, 'node_health')) | community.general.dict }}"
+      run_once: true
+
+    # With --limit only the selected nodes are checked; cluster-wide rules
+    # (one Keeper leader, one VIP owner) apply when all nodes are in the play.
+    - name: Cluster is fully healthy
+      ansible.builtin.assert:
+        that:
+          - all_health | rejectattr('server', 'equalto', 'up') | list | length == 0
+          - all_health | rejectattr('keeper', 'in', ['leader', 'follower']) | list | length == 0
+          - replica_rows | selectattr('is_readonly', 'equalto', 1) | list | length == 0
+          - replica_rows | rejectattr('active_replicas', 'equalto', groups['clickhouse'] | length) | list | length == 0
+          - partial | bool or all_health | selectattr('keeper', 'equalto', 'leader') | list | length == 1
+          - partial | bool or not enable_vip | bool or all_health | selectattr('vip_owner', 'equalto', 'yes') | list | length == 1
+        success_msg: "HEALTHY: servers up, Keeper in quorum (1 leader), VIP on exactly one node, all replicas writable and active."
+      vars:
+        all_health: "{{ ansible_play_hosts_all | map('extract', hostvars, 'node_health') | list }}"
+        replica_rows: "{{ all_health | map(attribute='replicas') | flatten }}"
+        partial: "{{ ansible_play_hosts_all | length < groups['clickhouse'] | length }}"
+      run_once: true

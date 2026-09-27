@@ -1,0 +1,43 @@
+# Restart Keeper and ClickHouse one node at a time, waiting for each node to be
+# fully back (Keeper in quorum, replicas writable, replication queue drained)
+# before touching the next. Use this for config changes and upgrades.
+#   ansible-playbook playbooks/rolling_restart.yml --ask-vault-pass
+- name: Rolling restart
+  hosts: clickhouse
+  become: true
+  gather_facts: false
+  serial: 1
+  vars:
+    ch: clickhouse-client --config-file /root/.clickhouse-client-admin.xml
+  tasks:
+    - name: Restart Keeper
+      ansible.builtin.systemd:
+        name: clickhouse-keeper
+        state: restarted
+
+    - name: Keeper rejoined the quorum
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo mntr | nc -w 2 {{ node_ip }} {{ keeper_client_port }} | awk '$1=="zk_server_state"{print $2}'
+      args:
+        executable: /bin/bash
+      register: keeper
+      until: keeper.stdout in ['leader', 'follower']
+      retries: 30
+      delay: 2
+      changed_when: false
+
+    - name: Restart ClickHouse
+      ansible.builtin.systemd:
+        name: clickhouse-server
+        state: restarted
+
+    - name: Replicas writable and caught up
+      ansible.builtin.command: >
+        {{ ch }} -q "SELECT count() FROM system.replicas
+                     WHERE is_readonly OR queue_size > 0 OR active_replicas < total_replicas"
+      register: lagging
+      until: lagging.rc == 0 and lagging.stdout | int == 0
+      retries: 60
+      delay: 5
+      changed_when: false
