@@ -1,0 +1,5 @@
+clickhouse-connect>=0.8,<1
+rich>=13
+PyYAML>=6
+fastapi>=0.110
+uvicorn>=0.29

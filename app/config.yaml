@@ -1,0 +1,38 @@
+# Runs on chpoc-app (inside the VPC). Must match ansible/inventory.ini.
+cluster:
+  vip: 10.107.40.100          # chpoc-vip, floated by keepalived
+  nodes:
+    - {name: chpoc-1, host: 10.107.40.5}
+    - {name: chpoc-2, host: 10.107.40.6}
+    - {name: chpoc-3, host: 10.107.40.7}
+  http_port: 8123
+  keeper_port: 9181
+  database: poc
+
+auth:
+  user: app
+  password_env: CH_APP_PASSWORD   # set by ~/.chpoc-app.env (written by Ansible)
+
+# Chaos runner: SSH from chpoc-app to the nodes with ~/.ssh/id_chpoc and passwordless sudo.
+ssh:
+  user: chadmin
+  options: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new"]
+
+workload:
+  writer_id: poc-writer
+  batch_size: 100            # rows per INSERT
+  batches_per_sec: 5         # => 500 rows/s
+  payload_bytes: 64
+  insert_quorum: 2
+  insert_quorum_timeout_ms: 15000
+  read_interval_s: 1.0
+
+timeouts:
+  connect_s: 2
+  query_s: 20                # must exceed insert_quorum_timeout
+
+chaos:
+  hold_s: 40                 # how long each failure is left in place
+  converge_timeout_s: 300    # max wait for the cluster to heal afterwards
+
+runs_dir: runs               # ledger, event log, outages, report
