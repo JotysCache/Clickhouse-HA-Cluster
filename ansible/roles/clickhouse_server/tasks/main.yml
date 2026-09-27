@@ -1,0 +1,92 @@
+# The package postinst may drop a default-password.xml; our users file is the
+# single source of truth for users, so remove it.
+- name: Remove package-generated default password override
+  ansible.builtin.file:
+    path: /etc/clickhouse-server/users.d/default-password.xml
+    state: absent
+  notify: restart clickhouse-server
+
+- name: Server config overrides
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/clickhouse-server/config.d/{{ item }}"
+    owner: clickhouse
+    group: clickhouse
+    mode: "0640"
+  loop:
+    - 10-network.xml
+    - 20-cluster.xml
+    - 30-interserver.xml
+    - 40-observability.xml
+    - 45-durability.xml
+  notify: restart clickhouse-server
+
+- name: Users, profiles and grants
+  ansible.builtin.template:
+    src: 50-users.xml.j2
+    dest: /etc/clickhouse-server/users.d/50-users.xml
+    owner: clickhouse
+    group: clickhouse
+    mode: "0640"
+  notify: restart clickhouse-server
+
+# Lets `sudo clickhouse-client` (and Ansible) log in as admin without putting
+# the password on the command line.
+- name: Root client config
+  ansible.builtin.template:
+    src: root-client-config.xml.j2
+    dest: /root/.clickhouse-client-admin.xml
+    owner: root
+    group: root
+    mode: "0600"
+
+# The package restarts a crashed server after 30 s; 5 s is plenty and cuts
+# crash recovery time (replicas on this node are unavailable meanwhile).
+- name: Drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/clickhouse-server.service.d
+    state: directory
+    mode: "0755"
+
+- name: Faster automatic restart after a crash
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/clickhouse-server.service.d/10-restart.conf
+    content: |
+      [Service]
+      Restart=always
+      RestartSec=5
+    mode: "0644"
+  register: restart_dropin
+
+- name: Reload systemd for the drop-in
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: restart_dropin is changed
+
+- name: Server enabled and running
+  ansible.builtin.systemd:
+    name: clickhouse-server
+    enabled: true
+    state: started
+
+- name: Apply server config changes now
+  ansible.builtin.meta: flush_handlers
+
+- name: Server answers /ping
+  ansible.builtin.uri:
+    url: "http://{{ node_ip }}:{{ ch_http_port }}/ping"
+    return_content: true
+  register: ping
+  until: ping.status == 200
+  retries: 30
+  delay: 2
+
+- name: Server is connected to Keeper
+  ansible.builtin.command: >
+    clickhouse-client --config-file /root/.clickhouse-client-admin.xml
+    -q "SELECT count() FROM system.zookeeper WHERE path = '/'"
+  register: zk_probe
+  until: zk_probe.rc == 0
+  retries: 15
+  delay: 2
+  changed_when: false

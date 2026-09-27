@@ -1,0 +1,28 @@
+# Creates the POC database and tables on every replica (ON CLUSTER DDL goes
+# through Keeper, so running it on one node is enough). Idempotent.
+- name: Create schema
+  hosts: clickhouse[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Upload schema
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../roles/clickhouse_server/files/schema.sql"
+        dest: /tmp/poc_schema.sql
+        mode: "0644"
+
+    - name: Apply schema ON CLUSTER
+      ansible.builtin.shell: >
+        clickhouse-client --config-file /root/.clickhouse-client-admin.xml
+        --multiquery < /tmp/poc_schema.sql
+      register: schema
+      changed_when: false
+
+    - name: Every replica has the table
+      ansible.builtin.command: >
+        clickhouse-client --config-file /root/.clickhouse-client-admin.xml -q
+        "SELECT count() FROM clusterAllReplicas('{{ cluster_name }}', system.tables)
+         WHERE database = '{{ app_database }}' AND name = 'events'"
+      register: replicas_with_table
+      failed_when: replicas_with_table.stdout | int != groups['clickhouse'] | length
+      changed_when: false

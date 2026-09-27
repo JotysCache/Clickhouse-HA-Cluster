@@ -1,0 +1,10 @@
+<!-- {{ ansible_managed }} -->
+<!-- Replicas fetch parts from each other over this port. -->
+<clickhouse>
+    <interserver_http_port>{{ ch_interserver_port }}</interserver_http_port>
+    <interserver_http_host>{{ node_ip }}</interserver_http_host>
+    <interserver_http_credentials>
+        <user>interserver</user>
+        <password>{{ vault_interserver_password }}</password>
+    </interserver_http_credentials>
+</clickhouse>

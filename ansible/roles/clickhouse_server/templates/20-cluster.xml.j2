@@ -1,0 +1,40 @@
+<!-- {{ ansible_managed }} -->
+<clickhouse>
+    <remote_servers replace="true">
+        <{{ cluster_name }}>
+            <!-- Authenticates node-to-node Distributed queries without a shared user password -->
+            <secret>{{ vault_cluster_secret }}</secret>
+            <shard>
+                <!-- Replicated tables replicate themselves; Distributed writes go to one replica -->
+                <internal_replication>true</internal_replication>
+{% for h in groups['clickhouse'] %}
+                <replica>
+                    <host>{{ hostvars[h].node_ip }}</host>
+                    <port>{{ ch_native_port }}</port>
+                </replica>
+{% endfor %}
+            </shard>
+        </{{ cluster_name }}>
+    </remote_servers>
+
+    <macros>
+        <cluster>{{ cluster_name }}</cluster>
+        <shard>{{ shard }}</shard>
+        <replica>{{ inventory_hostname }}</replica>
+    </macros>
+
+    <zookeeper>
+{% for h in groups['clickhouse'] %}
+        <node>
+            <host>{{ hostvars[h].node_ip }}</host>
+            <port>{{ keeper_client_port }}</port>
+        </node>
+{% endfor %}
+        <session_timeout_ms>{{ keeper_session_timeout_ms }}</session_timeout_ms>
+        <operation_timeout_ms>{{ keeper_operation_timeout_ms }}</operation_timeout_ms>
+    </zookeeper>
+
+    <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+    </distributed_ddl>
+</clickhouse>
