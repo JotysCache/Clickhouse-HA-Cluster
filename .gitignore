@@ -1,0 +1,8 @@
+ansible/group_vars/all/vault.yml
+app/runs/
+app/.venv/
+logs/
+*.pyc
+__pycache__/
+*.retry
+.venv/

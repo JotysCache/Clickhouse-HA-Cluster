@@ -1,0 +1,125 @@
+- name: Supported OS only
+  ansible.builtin.assert:
+    that: ansible_os_family == "Debian"
+    fail_msg: "This POC targets Ubuntu/Debian (apt + systemd)."
+
+- name: Secrets are provided (group_vars/all/vault.yml)
+  ansible.builtin.assert:
+    that:
+      - vault_default_password is defined
+      - vault_admin_password is defined
+      - vault_app_password is defined
+      - vault_interserver_password is defined
+      - vault_cluster_secret is defined
+      - vault_vrrp_password is defined
+    fail_msg: "Create group_vars/all/vault.yml from vault.example.yml"
+  run_once: true
+
+- name: Exactly 3 nodes with unique keeper ids
+  ansible.builtin.assert:
+    that:
+      - groups['clickhouse'] | length == 3
+      - groups['clickhouse'] | map('extract', hostvars, 'keeper_id') | unique | list | length == 3
+  run_once: true
+
+- name: apt goes through the egress proxy
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/95chpoc-proxy
+    content: |
+      Acquire::http::Proxy "{{ egress_proxy_url }}";
+      Acquire::https::Proxy "{{ egress_proxy_url }}";
+    mode: "0644"
+  when: use_egress_proxy | bool
+
+- name: Base packages
+  ansible.builtin.apt:
+    name: [apt-transport-https, ca-certificates, curl, gnupg, chrony, netcat-openbsd, iptables]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Take time from the internal NTP server
+  ansible.builtin.copy:
+    dest: /etc/chrony/sources.d/chpoc.sources
+    content: |
+      server {{ egress_proxy_host }} iburst prefer
+    mode: "0644"
+  when: use_egress_proxy | bool
+  register: ntp_source
+
+- name: Time sync (Raft and replication depend on sane clocks)
+  ansible.builtin.service:
+    name: chrony
+    state: "{{ 'restarted' if ntp_source is changed else 'started' }}"
+    enabled: true
+
+- name: Hostname matches the inventory name
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Cluster names in /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} clickhouse-poc"
+    block: |
+      {% for h in groups['clickhouse'] %}
+      {{ hostvars[h].node_ip }} {{ h }}
+      {% endfor %}
+      {% if enable_vip | bool %}
+      {{ vip_address }} {{ vip_hostname }}
+      {% endif %}
+
+- name: Kernel settings for ClickHouse
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/60-clickhouse.conf
+    reload: true
+  loop: "{{ sysctl_settings | dict2items }}"
+  vars:
+    sysctl_settings:
+      vm.swappiness: 1
+      vm.max_map_count: 262144
+      net.core.somaxconn: 4096
+      net.ipv4.tcp_keepalive_time: 60
+
+# Own file name: the clickhouse-server package ships limits.d/clickhouse.conf.
+- name: Open-file limits
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/90-chpoc-clickhouse.conf
+    content: |
+      clickhouse soft nofile 262144
+      clickhouse hard nofile 262144
+      clickhouse soft nproc  131072
+      clickhouse hard nproc  131072
+    mode: "0644"
+
+- name: Transparent huge pages = madvise (unit)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/thp-madvise.service
+    content: |
+      [Unit]
+      Description=Set transparent huge pages to madvise (ClickHouse recommendation)
+      DefaultDependencies=no
+      After=sysinit.target local-fs.target
+      Before=clickhouse-server.service clickhouse-keeper.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/sh -c 'echo madvise > /sys/kernel/mm/transparent_hugepage/enabled'
+
+      [Install]
+      WantedBy=basic.target
+    mode: "0644"
+
+- name: Transparent huge pages = madvise (apply)
+  ansible.builtin.systemd:
+    name: thp-madvise
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Firewall
+  ansible.builtin.include_tasks: firewall.yml
+  when: firewall_enabled

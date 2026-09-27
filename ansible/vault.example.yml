@@ -1,0 +1,15 @@
+# Copy to group_vars/all/vault.yml, set real values, then encrypt it:
+#   ansible-vault encrypt group_vars/all/vault.yml
+vault_default_password: "change-me-default"
+vault_admin_password: "change-me-admin"
+vault_app_password: "change-me-app"
+vault_interserver_password: "change-me-interserver"
+vault_cluster_secret: "change-me-cluster-secret"
+vault_vrrp_password: "chvrrp01"     # keepalived only uses the first 8 chars
+
+# Status page only (roles/status_web). Cloudflare dashboard: SSL/TLS > Origin Server >
+# Create Certificate. Paste both PEM blocks, including their BEGIN/END lines.
+vault_origin_cert: |
+  <origin certificate PEM>
+vault_origin_key: |
+  <origin certificate private key PEM>

@@ -1,0 +1,7 @@
+collections:
+  - name: community.general
+    version: ">=13.0.0,<14.0.0"
+  - name: ansible.posix
+    version: ">=2.2.0,<3.0.0"
+  - name: community.crypto
+    version: ">=3.4.0,<4.0.0"

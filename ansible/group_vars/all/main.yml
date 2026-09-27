@@ -1,0 +1,89 @@
+# ---- ClickHouse packages ----------------------------------------------------
+# "lts" or "stable" apt channel. Pin clickhouse_version (e.g. "25.8.4.13") for
+# repeatable deploys; empty = latest in the channel. Packages are held by apt so
+# unattended-upgrades never bumps the database under you.
+clickhouse_channel: lts
+clickhouse_version: ""
+
+# ---- Topology ---------------------------------------------------------------
+cluster_name: poc_cluster
+shard: "01"
+node_ip: "{{ private_ip | default(ansible_host) }}"
+cluster_node_ips: "{{ groups['clickhouse'] | map('extract', hostvars, 'node_ip') | list }}"
+vip_hostname: chpoc-vip
+
+# ---- Ports ------------------------------------------------------------------
+ch_http_port: 8123
+ch_native_port: 9000
+ch_interserver_port: 9009
+ch_prometheus_port: 9363
+keeper_client_port: 9181
+keeper_raft_port: 9234
+haproxy_stats_port: 8404
+
+# ---- Keeper -----------------------------------------------------------------
+keeper_session_timeout_ms: 30000
+keeper_operation_timeout_ms: 10000
+
+# ---- VIP (HAProxy + keepalived) ---------------------------------------------
+# The VIP must be a FREE address in the same L2 subnet as the VMs. VRRP does not
+# work on most public clouds (AWS/Azure/GCP): set enable_vip=false there and use
+# the app's client-side failover mode.
+enable_vip: true
+vip_address: 10.107.40.100
+vip_prefix: 24
+vip_interface: "{{ ansible_default_ipv4.interface }}"
+vrrp_router_id: 51          # must be unique on the L2 segment
+
+# ---- Access control ---------------------------------------------------------
+# Networks allowed to reach ClickHouse / HAProxy / Keeper 4lw from outside the
+# cluster: your laptop or app servers. CHANGE THIS.
+client_cidrs:
+  - 10.107.40.8/32          # chpoc-app
+# Networks the admin user may log in from (in addition to localhost).
+admin_cidrs: "{{ client_cidrs }}"
+
+firewall_enabled: true
+
+# ---- Application database ---------------------------------------------------
+app_database: poc
+app_insert_quorum: 2
+app_insert_quorum_timeout_ms: 15000
+
+# ---- HAProxy health check -------------------------------------------------
+# /ping only proves the process is alive. The check instead runs a trivial
+# query on the app table, so a node that is up but cannot serve the table
+# (e.g. table failed to load after a crash) is taken out of rotation.
+# A read-only replica still answers it and stays in rotation for reads.
+healthcheck_user: healthcheck
+healthcheck_password: "{{ (vault_cluster_secret ~ ':healthcheck') | hash('sha256') }}"
+healthcheck_query: "SELECT 1 FROM {{ app_database }}.events WHERE 0"
+
+# ---- Egress (VPC has no NAT gateway) ------------------------------------------
+# The DB nodes reach package repos only through the allowlisted Squid proxy on
+# chpoc-app, and take time from chrony on chpoc-app. Set use_egress_proxy=false
+# on networks where the nodes have direct internet access.
+use_egress_proxy: true
+vpc_cidr: 10.107.40.0/24
+egress_proxy_host: "{{ hostvars[groups['client'][0]].private_ip }}"
+egress_proxy_port: 3128
+egress_proxy_url: "http://{{ egress_proxy_host }}:{{ egress_proxy_port }}"
+egress_allowed_domains:        # a leading dot also matches the domain itself
+  - .archive.ubuntu.com
+  - .security.ubuntu.com
+  - .packages.clickhouse.com
+  - .esm.ubuntu.com             # Ubuntu Pro/ESM source present in the cloud image
+  - .download.docker.com        # Docker repo pre-configured in the cloud image
+# no_proxy lists exact addresses: many tools do not understand CIDRs there.
+no_proxy_hosts: "{{ ['localhost', '127.0.0.1', '::1', vip_address, vip_hostname] + cluster_node_ips + groups['clickhouse'] }}"
+proxy_env: "{{ {'http_proxy': egress_proxy_url, 'https_proxy': egress_proxy_url,
+               'no_proxy': no_proxy_hosts | join(','), 'NO_PROXY': no_proxy_hosts | join(',')}
+               if use_egress_proxy | bool else {} }}"
+
+# ---- Public status page (chpoc-app) -----------------------------------------------
+# Empty web_domain = status page not deployed. Needs vault_web_password,
+# vault_origin_cert and vault_origin_key (Cloudflare Origin Certificate).
+web_domain: clickhouse-ha.tenbyte-dev.top
+web_port: 8080
+web_user: chpoc
+web_password_salt: "{{ (vault_cluster_secret | hash('sha1'))[:16] }}"

@@ -1,0 +1,40 @@
+- name: ufw installed
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+# Allow SSH first so enabling the firewall can never lock us out.
+- name: Allow SSH
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+
+# Cluster peers trust each other fully: ClickHouse, interserver, Keeper Raft,
+# and VRRP (IP protocol 112, which a port rule would not cover).
+- name: Allow all traffic from cluster peers
+  community.general.ufw:
+    rule: allow
+    src: "{{ item }}"
+  loop: "{{ cluster_node_ips | reject('equalto', node_ip) | list }}"
+
+- name: Allow clients to ClickHouse, HAProxy, Keeper 4lw and metrics
+  community.general.ufw:
+    rule: allow
+    src: "{{ item.0 }}"
+    port: "{{ item.1 | string }}"
+    proto: tcp
+  loop: "{{ client_cidrs | product(client_ports) | list }}"
+  vars:
+    client_ports:
+      - "{{ ch_http_port }}"
+      - "{{ ch_native_port }}"
+      - "{{ keeper_client_port }}"
+      - "{{ ch_prometheus_port }}"
+      - "{{ haproxy_stats_port }}"
+
+- name: Default deny incoming, enable
+  community.general.ufw:
+    state: enabled
+    direction: incoming
+    policy: deny
