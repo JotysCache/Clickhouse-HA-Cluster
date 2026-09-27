@@ -1,0 +1,19 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# keepalived runs this every few seconds. A node may hold the VIP only if:
+#   1. HAProxy is running here, and
+#   2. it can see a majority of the cluster (itself included).
+# Rule 2 prevents split-brain: a network-isolated node would otherwise stop
+# hearing VRRP adverts, claim the VIP as well, and steal traffic into a
+# partition that has no Keeper quorum (read-only).
+systemctl is-active --quiet haproxy || exit 1
+
+# Probe peers in parallel so the check finishes in ~1 s.
+seen=1
+{% for ip in cluster_node_ips | reject('equalto', node_ip) %}
+nc -z -w 1 {{ ip }} {{ haproxy_stats_port }} >/dev/null 2>&1 & p{{ loop.index }}=$!
+{% endfor %}
+{% for ip in cluster_node_ips | reject('equalto', node_ip) %}
+wait $p{{ loop.index }} && seen=$((seen + 1))
+{% endfor %}
+[ "$seen" -ge {{ (cluster_node_ips | length // 2) + 1 }} ]

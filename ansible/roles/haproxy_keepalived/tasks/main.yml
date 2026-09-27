@@ -1,0 +1,45 @@
+# HAProxy binds the VIP on every node, even while the VIP lives elsewhere, so
+# failover needs no HAProxy restart.
+- name: Allow binding to the VIP before this node owns it
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: "1"
+    sysctl_file: /etc/sysctl.d/60-haproxy.conf
+    reload: true
+
+- name: HAProxy and keepalived
+  ansible.builtin.apt:
+    name: [haproxy, keepalived]
+    state: present
+
+- name: HAProxy config
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: haproxy
+    mode: "0640"
+    validate: haproxy -c -f %s
+  notify: reload haproxy
+
+- name: VIP health check script
+  ansible.builtin.template:
+    src: check_vip_eligible.sh.j2
+    dest: /etc/keepalived/check_vip_eligible.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: keepalived config
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    mode: "0640"
+  notify: restart keepalived
+
+- name: HAProxy and keepalived enabled and running
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [haproxy, keepalived]

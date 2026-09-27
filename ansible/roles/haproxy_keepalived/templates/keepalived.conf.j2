@@ -1,0 +1,52 @@
+# {{ ansible_managed }}
+global_defs {
+    router_id {{ inventory_hostname }}
+    script_user root
+    enable_script_security
+}
+
+# Must fail faster than the VRRP master-down timer (~3 x advert_int = ~3.6 s):
+# an isolated node has to go FAULT before it would claim the VIP (chaos S7).
+vrrp_script vip_eligible {
+    script "/etc/keepalived/check_vip_eligible.sh"
+    interval 1
+    timeout 2
+    fall 2
+    rise 3
+}
+
+vrrp_instance VI_CLICKHOUSE {
+    # All nodes start as BACKUP with nopreempt: the VIP stays where it is when a
+    # failed node returns, avoiding a second, unnecessary failover.
+    state BACKUP
+    nopreempt
+    interface {{ vip_interface }}
+    virtual_router_id {{ vrrp_router_id }}
+    priority {{ 150 - (groups['clickhouse'].index(inventory_hostname) * 10) }}
+    advert_int 1
+    # Re-announce the VIP's MAC every 5 s while MASTER, so a stray gratuitous
+    # ARP (e.g. from a briefly split-brained node) is corrected within 5 s.
+    garp_master_refresh 5
+    garp_master_refresh_repeat 2
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ vault_vrrp_password[:8] }}
+    }
+
+    # Unicast VRRP: works on networks that filter multicast.
+    unicast_src_ip {{ node_ip }}
+    unicast_peer {
+{% for ip in cluster_node_ips | reject('equalto', node_ip) %}
+        {{ ip }}
+{% endfor %}
+    }
+
+    virtual_ipaddress {
+        {{ vip_address }}/{{ vip_prefix }} dev {{ vip_interface }}
+    }
+
+    track_script {
+        vip_eligible
+    }
+}
