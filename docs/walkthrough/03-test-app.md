@@ -48,7 +48,7 @@ Below the workload panel, "Recovered outages" lists every period in which writes
 
 ## The status page
 
-https://clickhouse-ha.tenbyte-dev.top shows the same data in a browser, for people who do not have SSH access. It is read-only and needs a login (user `chpoc`; the password is `vault_web_password` in the vault).
+https://clickhouse-ha.tenbyte-dev.top shows the same data in a browser, for people who do not have SSH access. It is public and read-only: it shows node names, private IPs, row counts and the test timeline, and gives no access to the database. If it ever needs to be private again, Cloudflare Access can be put in front of it without changing the server.
 
 ![Status page](../screenshots/S17-web-status.png)
 
@@ -62,7 +62,7 @@ Browser times are local (Dhaka, UTC+6); the terminal screenshots show UTC.
 How it is published:
 
 ```
-browser → Cloudflare (TLS, proxied DNS) → nginx :443 on chpoc-app (Cloudflare origin certificate, basic auth)
+browser → Cloudflare (TLS, proxied DNS) → nginx :443 on chpoc-app (Cloudflare origin certificate)
         → hatest web on 127.0.0.1:8080 → polls the nodes over the private network
 ```
 
@@ -70,7 +70,7 @@ browser → Cloudflare (TLS, proxied DNS) → nginx :443 on chpoc-app (Cloudflar
 - ufw on `chpoc-app` accepts 80 and 443 only from Cloudflare's published IP ranges.
 - nginx drops requests for any other hostname.
 
-We tested it from outside: no login returns 401, a wrong password returns 401, the correct login returns 200 via Cloudflare, and a direct request to 163.61.156.220 is refused on both ports.
+Tested from outside: the page returns 200 through Cloudflare, and a direct request to 163.61.156.220 on port 80 or 443 is refused.
 
 ## The scenario runner
 

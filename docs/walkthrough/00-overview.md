@@ -16,7 +16,7 @@ That last point is the one we test hardest. The test app records every INSERT th
 </picture>
 
 1. Users open the status page; DNS for `clickhouse-ha.tenbyte-dev.top` is proxied by Cloudflare, with SSL mode Full (strict) for this hostname only.
-2. Cloudflare connects to `chpoc-app` over TLS (Full strict, Cloudflare origin certificate). ufw accepts 80/443 only from Cloudflare's IP ranges; nginx asks for the login and proxies to `hatest web` on 127.0.0.1:8080.
+2. Cloudflare connects to `chpoc-app` over TLS (Full strict, Cloudflare origin certificate). ufw accepts 80/443 only from Cloudflare's IP ranges; nginx proxies to `hatest web` on 127.0.0.1:8080.
 3. `hatest web` (and the workload's monitor) polls every node directly on :8123 and Keeper :9181.
 4. The workload sends SQL to the VIP 10.107.40.100:8123 with `insert_quorum = 2`.
 5. HAProxy on the node that holds the VIP forwards each request to one of the three replicas that pass the query health check (leastconn). HAProxy on the other two nodes is bound to the VIP as well (dashed) and takes over the moment the VIP moves.

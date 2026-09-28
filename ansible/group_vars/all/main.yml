@@ -81,9 +81,7 @@ proxy_env: "{{ {'http_proxy': egress_proxy_url, 'https_proxy': egress_proxy_url,
                if use_egress_proxy | bool else {} }}"
 
 # ---- Public status page (chpoc-app) -----------------------------------------------
-# Empty web_domain = status page not deployed. Needs vault_web_password,
-# vault_origin_cert and vault_origin_key (Cloudflare Origin Certificate).
+# Empty web_domain = status page not deployed. Needs vault_origin_cert and
+# vault_origin_key (Cloudflare Origin Certificate). The page is public and read-only.
 web_domain: clickhouse-ha.tenbyte-dev.top
 web_port: 8080
-web_user: chpoc
-web_password_salt: "{{ (vault_cluster_secret | hash('sha1'))[:16] }}"

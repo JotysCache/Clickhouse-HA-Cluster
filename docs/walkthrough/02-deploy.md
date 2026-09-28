@@ -33,15 +33,14 @@ Secrets live in `ansible/group_vars/all/vault.yml`, encrypted with Ansible Vault
 - passwords for the `default`, `admin` and `app` ClickHouse users (stored on the servers as SHA-256 hashes),
 - the interserver replication credentials and the cluster secret,
 - the VRRP password,
-- the status page password,
 - the Cloudflare origin certificate and its private key.
 
 They were generated with a random generator and never typed or shown in plain text. The vault key is in `~/.chpoc-vault-pass` on the laptop, outside the repository, and `ansible.cfg` points to it, so runs need no prompt. The vault file itself is excluded from git.
 
-To read one value, for example the status page password:
+To read one value, for example the `app` user's password:
 
 ```bash
-cd ansible && ../.venv/bin/ansible localhost -m debug -a "msg={{ vault_web_password }}"
+cd ansible && ../.venv/bin/ansible localhost -m debug -a "msg={{ vault_app_password }}"
 ```
 
 ## Running the deployment
@@ -58,7 +57,7 @@ cd ansible && ../.venv/bin/ansible-playbook site.yml
 | ClickHouse nodes | apt through the proxy, chrony from `chpoc-app`, sysctl and limits, transparent huge pages set to `madvise`, ufw; ClickHouse packages from the official repo, pinned and held; Keeper as its own systemd unit (waits for the 3-node quorum); server config: cluster, macros, Keeper, interserver auth, users, durability settings, a 5 s restart-on-crash drop-in |
 | Load balancer | HAProxy bound on the VIP on every node; keepalived with the majority check |
 | Schema | `poc.events`, `poc.events_all` (Distributed) and `poc.probe`, created `ON CLUSTER` |
-| Application host | the `hatest` app with its own virtualenv, the chaos SSH key, the status page (nginx, origin certificate, login, Cloudflare-only firewall) |
+| Application host | the `hatest` app with its own virtualenv, the chaos SSH key, the status page (nginx, origin certificate, Cloudflare-only firewall) |
 | Health | the report below, and an assert that fails the run unless everything is healthy |
 
 The health play checks each node directly and fails the whole run unless all servers are up, Keeper has exactly one leader, the VIP is on exactly one node and every replica is writable:

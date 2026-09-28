@@ -30,7 +30,7 @@ All eight failure scenarios pass on the real VMs (Ubuntu 24.04, ClickHouse 26.8 
 
 With client-side failover instead of the VIP, scenarios 1, 3 and 7 measured 0 s of downtime. Testing also produced twelve findings: eight defects that were fixed and re-tested, two facts about the environment, and two open follow-ups. See [results](docs/walkthrough/05-results.md).
 
-The status page for the running cluster is at https://clickhouse-ha.tenbyte-dev.top (login required).
+The status page for the running cluster is at https://clickhouse-ha.tenbyte-dev.top (public, read-only).
 
 ## Walkthrough
 
