@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClickHouse HA Status</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5d6673; --line: #e2e6ea;
+    --ok: #16794a; --ok-bg: #e3f4ea; --warn: #9a5b00; --warn-bg: #fdf1dc;
+    --bad: #b42318; --bad-bg: #fde7e5; --accent: #1a5fd6; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1216; --panel: #171b21; --text: #e6e9ed; --muted: #97a0ab; --line: #262c34;
+      --ok: #4cc38a; --ok-bg: #12301f; --warn: #f0b44c; --warn-bg: #33270f;
+      --bad: #ff6b5e; --bad-bg: #3a1714; --accent: #6ea2ff;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --panel: #171b21; --text: #e6e9ed; --muted: #97a0ab; --line: #262c34;
+    --ok: #4cc38a; --ok-bg: #12301f; --warn: #f0b44c; --warn-bg: #33270f;
+    --bad: #ff6b5e; --bad-bg: #3a1714; --accent: #6ea2ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-bottom: 20px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+       margin: 28px 0 10px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+          font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .ok { color: var(--ok); background: var(--ok-bg); }
+  .warn { color: var(--warn); background: var(--warn-bg); }
+  .bad { color: var(--bad); background: var(--bad-bg); }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .kpi .label { color: var(--muted); font-size: 12.5px; }
+  .kpi .value { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .node.down { border-color: var(--bad); }
+  .node .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .node .name { font-weight: 650; font-size: 16px; }
+  .vip { color: var(--accent); font-size: 12px; font-weight: 700; margin-left: 6px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 13.5px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+  .note { color: var(--bad); font-size: 12.5px; margin-top: 8px; word-break: break-word; }
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .mono { font-family: var(--mono); font-size: 12.5px; }
+  .src-chaos { color: var(--accent); font-weight: 600; }
+  .empty { color: var(--muted); padding: 10px; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 12.5px; }
+  button.theme { margin-left: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line);
+                 border-radius: 8px; padding: 5px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ClickHouse HA cluster</h1>
+    <span id="health" class="pill warn">connecting</span>
+    <span class="sub" id="vip"></span>
+    <button class="theme" id="theme" type="button" aria-label="Toggle colour theme">Theme</button>
+  </header>
+
+  <section class="kpis" aria-label="Workload">
+    <div class="card kpi"><div class="label">Write throughput</div><div class="value" id="k-rate">–</div></div>
+    <div class="card kpi"><div class="label">Acknowledged rows</div><div class="value" id="k-rows">–</div></div>
+    <div class="card kpi"><div class="label">Last successful write</div><div class="value" id="k-age">–</div></div>
+    <div class="card kpi"><div class="label">Workload</div><div class="value" id="k-run">–</div></div>
+  </section>
+
+  <h2>Nodes <span class="sub">(polled directly, every 2 s)</span></h2>
+  <section class="nodes" id="nodes"></section>
+
+  <h2>Recovered outages <span class="sub">(time-to-recover seen by the app)</span></h2>
+  <div class="card tablewrap"><table>
+    <thead><tr><th>Operation</th><th>From</th><th>To</th><th>Downtime</th><th>Failed attempts</th><th>First error</th></tr></thead>
+    <tbody id="outages"></tbody>
+  </table></div>
+
+  <h2>Timeline</h2>
+  <div class="card tablewrap"><table>
+    <thead><tr><th>Time</th><th>Source</th><th>Event</th></tr></thead>
+    <tbody id="events"></tbody>
+  </table></div>
+
+  <footer id="updated">Read-only view. ClickHouse itself is not reachable from the internet.</footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const t = (ts) => new Date(ts * 1000).toLocaleTimeString([], {hour12: false});
+const n = (x) => Number(x).toLocaleString();
+
+try {
+  const saved = localStorage.getItem("theme");
+  if (saved) document.documentElement.dataset.theme = saved;
+} catch (e) {}
+$("theme").onclick = () => {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const cur = document.documentElement.dataset.theme || (dark ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("theme", next); } catch (e) {}
+};
+
+function pill(text, cls) { return `<span class="pill ${cls}">${esc(text)}</span>`; }
+
+function nodeCard(nd, vipOwner) {
+  const up = nd.server === "up";
+  const keeperCls = nd.keeper === "leader" || nd.keeper === "follower" ? "ok" : "bad";
+  let replica = "–";
+  if ("readonly" in nd) replica = nd.readonly ? pill("read-only", "bad") : pill("writable", "ok");
+  const active = "active" in nd ? `${nd.active}/${nd.total}` : "–";
+  return `<article class="card node ${up ? "" : "down"}">
+    <div class="head"><span class="name">${esc(nd.name)}${vipOwner === nd.name ? '<span class="vip">VIP</span>' : ""}</span>
+      ${up ? pill("server up", "ok") : pill("server down", "bad")}</div>
+    <dl>
+      <dt>Keeper</dt><dd>${pill(nd.keeper ?? "?", keeperCls)}</dd>
+      <dt>Replica</dt><dd>${replica}</dd>
+      <dt>Active replicas</dt><dd>${active}</dd>
+      <dt>Replication queue</dt><dd>${esc(nd.queue ?? "–")}</dd>
+      <dt>Delay</dt><dd>${"delay" in nd ? esc(nd.delay) + " s" : "–"}</dd>
+      <dt>Rows</dt><dd>${"rows" in nd ? n(nd.rows) : "–"}</dd>
+    </dl>
+    ${nd.error ? `<div class="note">${esc(nd.error)}</div>` : ""}
+  </article>`;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("api/status", {cache: "no-store"});
+    if (!r.ok) throw new Error(r.status);
+    const s = await r.json();
+    const h = $("health");
+    h.className = "pill " + (s.healthy ? "ok" : "bad");
+    h.textContent = s.healthy ? "healthy" : "degraded: " + s.reason;
+    $("vip").textContent = s.vip.address ? `VIP ${s.vip.address} on ${s.vip.owner ?? "nobody"}` : "";
+    const w = s.workload;
+    $("k-rate").textContent = w.running ? `${n(Math.round(w.rate))}/s` : "–";
+    $("k-rows").textContent = n(w.acked_rows);
+    $("k-age").textContent = w.last_ack_age_s == null ? "–" : `${w.last_ack_age_s.toFixed(1)} s ago`;
+    $("k-run").innerHTML = w.running ? pill("writing", "ok") : pill("stopped", "warn");
+    $("nodes").innerHTML = s.nodes.map((nd) => nodeCard(nd, s.vip.owner)).join("");
+    $("outages").innerHTML = s.outages.length ? s.outages.map((o) => `<tr>
+        <td>${esc(o.op)}</td><td class="num">${t(o.start)}</td><td class="num">${t(o.end)}</td>
+        <td class="num">${o.duration_s.toFixed(1)} s</td><td class="num">${esc(o.errors)}</td>
+        <td class="mono">${esc(o.first_error)}</td></tr>`).join("")
+      : `<tr><td colspan="6" class="empty">No outages recorded.</td></tr>`;
+    $("events").innerHTML = s.events.length ? s.events.map((e) => `<tr>
+        <td class="num">${t(e.ts)}</td><td class="${e.source === "chaos" ? "src-chaos" : ""}">${esc(e.source)}</td>
+        <td>${esc(e.msg)}</td></tr>`).join("")
+      : `<tr><td colspan="3" class="empty">No events yet.</td></tr>`;
+    $("updated").textContent = `Updated ${t(s.now)}. Read-only view; ClickHouse itself is not reachable from the internet.`;
+  } catch (e) {
+    const h = $("health");
+    h.className = "pill warn";
+    h.textContent = "status API unreachable";
+  }
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

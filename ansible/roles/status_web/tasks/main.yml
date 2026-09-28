@@ -1,0 +1,126 @@
+# Public, read-only status page on chpoc-app:
+#   Cloudflare (proxied, Full strict) -> nginx :443 (origin cert, basic auth)
+#   -> hatest web on 127.0.0.1:8080. ClickHouse itself stays private.
+# 80/443 accept connections only from Cloudflare's IP ranges.
+- name: Web inputs are present
+  ansible.builtin.assert:
+    that:
+      - web_domain | length > 0
+      - vault_web_password is defined
+      - vault_origin_cert is defined
+      - vault_origin_key is defined
+    fail_msg: "Set web_domain and add vault_web_password, vault_origin_cert, vault_origin_key to the vault"
+
+- name: nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+
+- name: Status page service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/hatest-web.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=ClickHouse HA status page (hatest web)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      User={{ ansible_user }}
+      ExecStart=/usr/local/bin/hatest web --host 127.0.0.1 --port {{ web_port }}
+      Restart=always
+      RestartSec=3
+      NoNewPrivileges=yes
+      ProtectSystem=full
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: restart hatest-web
+
+- name: Status page running
+  ansible.builtin.systemd:
+    name: hatest-web
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Origin certificate directory
+  ansible.builtin.file:
+    path: /etc/ssl/chpoc
+    state: directory
+    mode: "0750"
+    group: www-data
+
+- name: Cloudflare origin certificate and key
+  ansible.builtin.copy:
+    dest: "/etc/ssl/chpoc/{{ item.name }}"
+    content: "{{ item.content }}"
+    owner: root
+    group: www-data
+    mode: "{{ item.mode }}"
+  loop:
+    - {name: origin.pem, content: "{{ vault_origin_cert }}", mode: "0644"}
+    - {name: origin.key, content: "{{ vault_origin_key }}", mode: "0640"}
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  notify: reload nginx
+
+- name: Login for the status page
+  ansible.builtin.copy:
+    dest: /etc/nginx/chpoc.htpasswd
+    content: "{{ web_user }}:{{ vault_web_password | password_hash('sha512', web_password_salt) }}\n"
+    owner: root
+    group: www-data
+    mode: "0640"
+  no_log: true
+
+- name: Cloudflare IP ranges (fetched live)
+  ansible.builtin.uri:
+    url: "https://www.cloudflare.com/{{ item }}"
+    return_content: true
+  loop: [ips-v4, ips-v6]
+  register: cf_ranges
+  check_mode: false
+
+- name: Cloudflare ranges as a list
+  ansible.builtin.set_fact:
+    cloudflare_cidrs: "{{ cf_ranges.results | map(attribute='content') | map('split') | flatten | select | list }}"
+
+- name: nginx site
+  ansible.builtin.template:
+    src: nginx-status.conf.j2
+    dest: /etc/nginx/sites-available/chpoc-status
+    mode: "0644"
+  notify: reload nginx
+
+- name: Enable site, disable nginx default
+  ansible.builtin.file:
+    path: "/etc/nginx/sites-enabled/{{ item.name }}"
+    src: "{{ item.src | default(omit) }}"
+    state: "{{ item.state }}"
+  loop:
+    - {name: chpoc-status, src: /etc/nginx/sites-available/chpoc-status, state: link}
+    - {name: default, state: absent}
+  notify: reload nginx
+
+- name: nginx config is valid
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: 80/443 only from Cloudflare
+  community.general.ufw:
+    rule: allow
+    src: "{{ item.0 }}"
+    port: "{{ item.1 }}"
+    proto: tcp
+  loop: "{{ cloudflare_cidrs | product(['80', '443']) | list }}"
+  loop_control:
+    label: "{{ item.0 }}:{{ item.1 }}"
+
+- name: nginx running
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
